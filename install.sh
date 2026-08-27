@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+#
+# install.sh — Install the custom DeepSeek Harness modes, plugins, and skills
+# from this repository into $DSH_HOME (.agent-presets and profiles/web).
+#
+# Usage:
+#   ./install.sh              # install (prompts)
+#   ./install.sh --dry-run    # preview only
+#   ./install.sh --yes        # skip prompts
+#   ./install.sh --uninstall  # restore from the latest backup
+#   DSH_HOME=/custom ./install.sh   # override install root
+#
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DRY_RUN=0
+YES=0
+UNINSTALL=0
+KEEP_BACKUP=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run|-n)   DRY_RUN=1 ;;
+    --yes|-y)       YES=1 ;;
+    --uninstall|-u) UNINSTALL=1 ;;
+    --keep-backup)  KEEP_BACKUP=1 ;;
+    *) echo "Unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
+PRESETS_SRC="$REPO_ROOT/agent-presets"
+WEB_SRC="$REPO_ROOT/web-profile"
+PRESETS_DST="$DSH_HOME/.agent-presets"
+WEB_DST="$DSH_HOME/profiles/web"
+WEB_FILES=(cordis.yml cordis.patch.yml package.json pnpm-workspace.yaml)
+
+log()  { printf '\033[36m==> %s\033[0m\n' "$*"; }
+ok()   { printf '\033[32m    %s\033[0m\n' "$*"; }
+skip() { printf '\033[90m    %s\033[0m\n' "$*"; }
+warn() { printf '\033[33m    %s\033[0m\n' "$*"; }
+
+if [[ ! -d "$PRESETS_SRC" ]]; then
+  echo "error: run from the repository root ($REPO_ROOT)" >&2
+  exit 1
+fi
+HAS_WEB=0
+if [[ -d "$WEB_SRC" ]]; then HAS_WEB=1; fi
+WEB_PLUGINS=()
+if (( HAS_WEB )) && [[ -d "$WEB_SRC/plugins" ]]; then
+  for p in "$WEB_SRC"/plugins/*/; do
+    [[ -d "$p" ]] && WEB_PLUGINS+=("$(basename "$p")")
+  done
+fi
+
+# ---- uninstall mode --------------------------------------------------------
+if (( UNINSTALL )); then
+  BACKUP="$(find "$DSH_HOME" -maxdepth 1 -type d -name '.dsh-modes-plugins-backup-*' -print | sort | tail -n 1 || true)"
+  if [[ -z "$BACKUP" || ! -d "$BACKUP" ]]; then
+    warn "No backup found under $DSH_HOME (nothing to restore)."
+    echo "If you want to remove the installed presets/web-profile anyway, delete them manually:"
+    echo "    rm -rf '$PRESETS_DST'"
+    echo "    rm -f  '$WEB_DST/cordis.patch.yml'   # only if you do not use the auto-diff patch"
+    exit 0
+  fi
+  log "Uninstalling — restoring from $BACKUP"
+
+  # The complete set of paths the installer may have touched (relative to DSH_HOME).
+  INSTALLED_RELS=()
+  for preset_dir in "$PRESETS_SRC"/*/; do
+    INSTALLED_RELS+=(".agent-presets/$(basename "$preset_dir")")
+  done
+  for f in "${WEB_FILES[@]}"; do
+    INSTALLED_RELS+=("profiles/web/$f")
+  done
+  for p in "${WEB_PLUGINS[@]}"; do
+    INSTALLED_RELS+=("profiles/web/plugins/$p")
+  done
+
+  # 1) Restore every backed-up item back to its original location.
+  log "Restoring backed-up files"
+  RESTORED=0
+  while IFS= read -r -d '' file; do
+    rel="${file#"$BACKUP"/}"
+    dest="$DSH_HOME/$rel"
+    ok "restore $rel"
+    if (( ! DRY_RUN )); then
+      mkdir -p "$(dirname "$dest")"
+      cp -f "$file" "$dest"
+    fi
+    RESTORED=1
+  done < <(find "$BACKUP" -type f -print0)
+  (( RESTORED )) || skip 'Backup is empty — nothing to restore'
+
+  # 2) Remove installed items that were NOT in the backup (created by installer).
+  log "Removing installer-created items not present in the backup"
+  for rel in "${INSTALLED_RELS[@]}"; do
+    if [[ -e "$DSH_HOME/$rel" ]] && [[ ! -e "$BACKUP/$rel" ]]; then
+      ok "remove $rel (not in backup)"
+      if (( ! DRY_RUN )); then rm -rf "${DSH_HOME:?}/$rel"; fi
+    else
+      skip "keep $rel (restored from backup or untouched)"
+    fi
+  done
+
+  # 3) Optionally clean up the backup folder.
+  if (( KEEP_BACKUP )); then
+    ok "Backup kept: $BACKUP"
+  else
+    log "Removing backup $BACKUP"
+    if (( ! DRY_RUN )); then rm -rf "${BACKUP:?}"; fi
+  fi
+
+  log "Uninstall complete"
+  echo
+  printf '\033[36mNext steps:\033[0m\n'
+  echo '  1. Restart the harness (dsh web restart)'
+  echo '  2. The previous state is restored; installed modes no longer load'
+  if (( DRY_RUN )); then echo; warn 'DRY RUN — nothing was changed.'; fi
+  exit 0
+fi
+
+log "Installing to $DSH_HOME"
+
+# ---- 1. backup existing files -------------------------------------------
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_ROOT="$DSH_HOME/.dsh-modes-plugins-backup-$STAMP"
+TO_BACKUP=()
+for preset_dir in "$PRESETS_SRC"/*/; do
+  name="$(basename "$preset_dir")"
+  [[ -e "$PRESETS_DST/$name" ]] && TO_BACKUP+=("$PRESETS_DST/$name")
+done
+for f in "${WEB_FILES[@]}"; do
+  [[ -e "$WEB_DST/$f" ]] && TO_BACKUP+=("$WEB_DST/$f")
+done
+if (( HAS_WEB )); then
+  for p in "${WEB_PLUGINS[@]}"; do
+    [[ -e "$WEB_DST/plugins/$p" ]] && TO_BACKUP+=("$WEB_DST/plugins/$p")
+  done
+fi
+
+if (( ${#TO_BACKUP[@]} > 0 )); then
+  log "Backing up ${#TO_BACKUP[@]} existing item(s) -> $BACKUP_ROOT"
+  for item in "${TO_BACKUP[@]}"; do
+    rel="${item#"$DSH_HOME"/}"
+    ok "backup $rel"
+    if (( ! DRY_RUN )); then
+      mkdir -p "$BACKUP_ROOT/$(dirname "$rel")"
+      cp -R "$item" "$BACKUP_ROOT/$rel"
+    fi
+  done
+else
+  skip "Nothing to back up (clean install)"
+fi
+
+# ---- 2. copy agent presets ------------------------------------------------
+# NOTE: `cp -R src dst` where dst already exists creates dst/src (nested).
+# Copy the *contents* with a trailing "/." so existing dirs are merged.
+log "Copying agent presets"
+for preset_dir in "$PRESETS_SRC"/*/; do
+  name="$(basename "$preset_dir")"
+  ok "agent-presets/$name -> .agent-presets/$name"
+  if (( ! DRY_RUN )); then
+    mkdir -p "$PRESETS_DST/$name"
+    cp -R "$preset_dir/." "$PRESETS_DST/$name/"
+  fi
+done
+
+# ---- 3. copy web profile ---------------------------------------------------
+if (( HAS_WEB )); then
+  log "Copying web profile"
+  for f in "${WEB_FILES[@]}"; do
+    ok "web-profile/$f -> profiles/web/$f"
+    if (( ! DRY_RUN )); then
+      mkdir -p "$WEB_DST"
+      cp "$WEB_SRC/$f" "$WEB_DST/$f"
+    fi
+  done
+  for p in "${WEB_PLUGINS[@]}"; do
+    ok "web-profile/plugins/$p -> profiles/web/plugins/$p"
+    if (( ! DRY_RUN )); then
+      mkdir -p "$WEB_DST/plugins/$p"
+      cp -R "$WEB_SRC/plugins/$p/." "$WEB_DST/plugins/$p/"
+    fi
+  done
+fi
+
+# ---- 4. opencode path fix-up (only when the repo ships a web-profile patch) --
+if (( HAS_WEB )); then
+  PATCH_PATH="$WEB_DST/cordis.patch.yml"
+  if grep -q 'C:/PATH/TO/opencode\.exe' "$PATCH_PATH" 2>/dev/null; then
+    log "opencode path"
+    CANDIDATE="$(command -v opencode || true)"
+    if (( YES )) || [[ -z "$CANDIDATE" ]]; then
+      if (( YES )); then
+        warn "Keeping placeholder C:/PATH/TO/opencode.exe — edit it in cordis.patch.yml yourself."
+      else
+        warn "Could not auto-detect opencode. Edit 'C:/PATH/TO/opencode.exe' in $PATCH_PATH yourself."
+      fi
+    else
+      ok "Detected opencode at: $CANDIDATE"
+      if (( ! DRY_RUN )); then
+        sed -i.bak "s|C:/PATH/TO/opencode\.exe|${CANDIDATE//\//\\/}|g" "$PATCH_PATH"
+        rm -f "$PATCH_PATH.bak"
+      fi
+    fi
+  fi
+fi
+
+# ---- 5. summary ------------------------------------------------------------
+log "Done"
+ok "Presets installed: $(basename -a "$PRESETS_SRC"/*/ | tr '\n' ' ')"
+(( HAS_WEB )) && ok "Web profile:       $WEB_DST"
+(( ${#TO_BACKUP[@]} > 0 )) && ok "Backup:            $BACKUP_ROOT"
+echo
+printf '\033[36mNext steps:\033[0m\n'
+echo '  1. Restart the harness (dsh web restart)'
+echo "  2. Pick a mode: $(basename -a "$PRESETS_SRC"/*/ | tr '\n' ' ')"
+if (( DRY_RUN )); then echo; warn 'DRY RUN — nothing was changed.'; fi

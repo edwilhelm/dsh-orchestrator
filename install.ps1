@@ -1,0 +1,264 @@
+<#
+.SYNOPSIS
+  Installs the custom DeepSeek Harness modes, plugins, and skills from this
+  repository into $DSH_HOME (.agent-presets and profiles/web).
+
+.DESCRIPTION
+  Copies:
+    agent-presets/<mode>/          -> $DSH_HOME/.agent-presets/<mode>/
+    web-profile/*                  -> $DSH_HOME/profiles/web/ (config files)
+    web-profile/plugins/subagent-acp/ -> $DSH_HOME/profiles/web/plugins/subagent-acp/
+
+  Every file that already exists at the target is backed up into a
+  timestamped folder before being overwritten. Nothing is deleted.
+
+.PARAMETER DshHome
+  Override the install root. Default: $env:DSH_HOME, else $HOME\.dsh.
+
+.PARAMETER DryRun
+  Print every action without changing anything.
+
+.PARAMETER Yes
+  Skip the confirmation prompt and the opencode-path prompt (keeps the
+  placeholder path from web-profile/cordis.patch.yml).
+
+.PARAMETER Uninstall
+  Restore the previous state from the latest backup folder
+  ($DshHome\.dsh-modes-plugins-backup-<timestamp>). Presets and web-profile
+  files that were created by the installer and didn't exist before are removed.
+
+.PARAMETER KeepBackup
+  When used with -Uninstall, keep the backup folder instead of deleting it.
+
+.EXAMPLE
+  .\install.ps1 -DryRun
+  .\install.ps1
+  .\install.ps1 -DshHome C:\custom\dsh -Yes
+  .\install.ps1 -Uninstall
+  .\install.ps1 -Uninstall -DryRun
+  .\install.ps1 -Uninstall -KeepBackup
+#>
+[CmdletBinding()]
+param(
+  [string]$DshHome = $(if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $HOME '.dsh' }),
+  [switch]$DryRun,
+  [switch]$Yes,
+  [switch]$Uninstall,
+  [switch]$KeepBackup
+)
+
+$ErrorActionPreference = 'Stop'
+$RepoRoot = $PSScriptRoot
+
+function Write-Step([string]$Msg) { Write-Host "==> $Msg" -ForegroundColor Cyan }
+function Write-Ok([string]$Msg)   { Write-Host "    $Msg" -ForegroundColor Green }
+function Write-Skip([string]$Msg) { Write-Host "    $Msg" -ForegroundColor DarkGray }
+function Write-Warn([string]$Msg) { Write-Host "    $Msg" -ForegroundColor Yellow }
+
+# ---- resolve source dirs --------------------------------------------------
+$PresetsSrc = Join-Path $RepoRoot 'agent-presets'
+$WebSrc     = Join-Path $RepoRoot 'web-profile'
+$WebFiles   = @('cordis.yml', 'cordis.patch.yml', 'package.json', 'pnpm-workspace.yaml')
+
+if (-not (Test-Path $PresetsSrc)) { throw "Not found: $PresetsSrc (run from the repo root)" }
+$HasWeb = Test-Path $WebSrc
+$WebPlugins = if ($HasWeb -and (Test-Path (Join-Path $WebSrc 'plugins'))) {
+  @(Get-ChildItem (Join-Path $WebSrc 'plugins') -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+} else { @() }
+
+# ---- uninstall mode --------------------------------------------------------
+if ($Uninstall) {
+  $PresetsDst = Join-Path $DshHome '.agent-presets'
+  $WebDst     = Join-Path $DshHome 'profiles\web'
+  $backups = @(Get-ChildItem $DshHome -Directory -Filter '.dsh-modes-plugins-backup-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+  if ($backups.Count -eq 0) {
+    Write-Warn "No backup found under $DshHome (nothing to restore)."
+    Write-Host 'If you want to remove the installed presets/web-profile anyway, delete them manually:'
+    Write-Host "    Remove-Item '$PresetsDst' -Recurse -Force"
+    Write-Host "    Remove-Item '$WebDst\cordis.patch.yml' -Force  # (only if you do not use the auto-diff patch)"
+    exit 0
+  }
+  $Backup = $backups[0]
+  Write-Step "Uninstalling -- restoring from $Backup"
+
+  # The complete set of paths the installer may have touched (relative to DshHome).
+  $installedRels = @()
+  foreach ($preset in Get-ChildItem $PresetsSrc -Directory) {
+    $installedRels += ".agent-presets\$($preset.Name)"
+  }
+  foreach ($f in $WebFiles) { $installedRels += "profiles\web\$f" }
+  foreach ($p in $WebPlugins) { $installedRels += "profiles\web\plugins\$p" }
+
+  # 1) Restore every backed-up item back to its original location.
+  Write-Step 'Restoring backed-up files'
+  # NOTE: pass $Backup.FullName (string), not the DirectoryInfo object —
+  # Get-ChildItem with a DirectoryInfo + -Recurse returns 0 items here.
+  $backupFiles = Get-ChildItem $Backup.FullName -Recurse -File -ErrorAction SilentlyContinue
+  if ($backupFiles) {
+    foreach ($file in $backupFiles) {
+      $rel = $file.FullName.Substring($Backup.FullName.Length).TrimStart('\', '/')
+      $dest = Join-Path $DshHome $rel
+      Write-Ok "restore $rel"
+      if (-not $DryRun) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+        Copy-Item $file.FullName $dest -Force
+      }
+    }
+  } else {
+    Write-Skip 'Backup is empty -- nothing to restore'
+  }
+
+  # 2) Remove installed items that were NOT in the backup (created by installer).
+  Write-Step 'Removing installer-created items not present in the backup'
+  foreach ($rel in $installedRels) {
+    $path = Join-Path $DshHome $rel
+    $inBackup = Test-Path (Join-Path $Backup.FullName $rel)
+    if ((Test-Path $path) -and (-not $inBackup)) {
+      Write-Ok "remove $rel (not in backup)"
+      if (-not $DryRun) { Remove-Item $path -Recurse -Force }
+    } else {
+      Write-Skip "keep $rel (restored from backup or untouched)"
+    }
+  }
+
+  # 3) Optionally clean up the backup folder.
+  if ($KeepBackup) {
+    Write-Ok "Backup kept: $($Backup.FullName)"
+  } else {
+    Write-Step "Removing backup $($Backup.FullName)"
+    if (-not $DryRun) { Remove-Item $Backup.FullName -Recurse -Force }
+  }
+
+  Write-Step 'Uninstall complete'
+  Write-Host ''
+  Write-Host 'Next steps:' -ForegroundColor Cyan
+  Write-Host '  1. Restart the harness (dsh web restart)'
+  Write-Host '  2. The previous state is restored; installed modes no longer load'
+  if ($DryRun) { Write-Host ''; Write-Warn 'DRY RUN -- nothing was changed.' }
+  exit 0
+}
+
+Write-Step "Installing to $DshHome"
+
+# ---- target layout --------------------------------------------------------
+$PresetsDst = Join-Path $DshHome '.agent-presets'
+$WebDst     = Join-Path $DshHome 'profiles\web'
+
+# ---- 1. backup existing files ---------------------------------------------
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$BackupRoot = Join-Path $DshHome ".dsh-modes-plugins-backup-$stamp"
+$toBackup = @()
+foreach ($preset in Get-ChildItem $PresetsSrc -Directory) {
+  $dst = Join-Path $PresetsDst $preset.Name
+  if (Test-Path $dst) { $toBackup += $dst }
+}
+if ($HasWeb) {
+  foreach ($f in $WebFiles) {
+    $dst = Join-Path $WebDst $f
+    if (Test-Path $dst) { $toBackup += $dst }
+  }
+  foreach ($p in $WebPlugins) {
+    $dst = Join-Path $WebDst "plugins\$p"
+    if (Test-Path $dst) { $toBackup += $dst }
+  }
+}
+
+if ($toBackup.Count -gt 0) {
+  Write-Step "Backing up $($toBackup.Count) existing item(s) -> $BackupRoot"
+  if (-not $DryRun) { New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null }
+  foreach ($item in $toBackup) {
+    $rel = $item.Substring($DshHome.Length).TrimStart('\', '/')
+    $dest = Join-Path $BackupRoot $rel
+    Write-Ok "backup $rel"
+    if (-not $DryRun) {
+      New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+      Copy-Item $item $dest -Recurse -Force
+    }
+  }
+} else {
+  Write-Skip "Nothing to back up (clean install)"
+}
+
+# ---- 2. copy agent presets -------------------------------------------------
+# NOTE: Copy-Item -Recurse into an existing directory creates a subfolder
+# (e.g. autodiff/autodiff/). To MERGE contents into the target we first
+# create the destination dir, then copy the *contents* of the source.
+Write-Step "Copying agent presets"
+foreach ($preset in Get-ChildItem $PresetsSrc -Directory) {
+  $dst = Join-Path $PresetsDst $preset.Name
+  Write-Ok "agent-presets/$($preset.Name) -> .agent-presets/$($preset.Name)"
+  if (-not $DryRun) {
+    New-Item -ItemType Directory -Force -Path $PresetsDst | Out-Null
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Copy-Item (Join-Path $preset.FullName '*') $dst -Recurse -Force
+  }
+}
+
+# ---- 3. copy web profile ---------------------------------------------------
+if ($HasWeb) {
+  Write-Step "Copying web profile"
+  if (-not $DryRun) { New-Item -ItemType Directory -Force -Path $WebDst | Out-Null }
+  foreach ($f in $WebFiles) {
+    $src = Join-Path $WebSrc $f
+    Write-Ok "web-profile/$f -> profiles/web/$f"
+    if (-not $DryRun) { Copy-Item $src (Join-Path $WebDst $f) -Force }
+  }
+  # plugins (same content-merge approach as presets)
+  foreach ($p in $WebPlugins) {
+    $src = Join-Path $WebSrc "plugins\$p"
+    $dst = Join-Path $WebDst "plugins\$p"
+    Write-Ok "web-profile/plugins/$p -> profiles/web/plugins/$p"
+    if (-not $DryRun) {
+      New-Item -ItemType Directory -Force -Path $dst | Out-Null
+      Copy-Item (Join-Path $src '*') $dst -Recurse -Force
+    }
+  }
+}
+# ---- 4. opencode path fix-up (only when the repo ships a web-profile patch) --
+if ($HasWeb) {
+  $PatchPath = if ($DryRun) { Join-Path $WebSrc 'cordis.patch.yml' } else { Join-Path $WebDst 'cordis.patch.yml' }
+  $content = Get-Content $PatchPath -Raw
+  if ($content -match 'C:/PATH/TO/opencode\.exe') {
+  Write-Step 'opencode path'
+  $candidate = $null
+  # Prefer the real executable over npm's .ps1/.cmd shim. `Get-Command opencode`
+  # returns the shim first on Windows; the real binary lives under the npm global
+  # root (e.g. $env:APPDATA\npm\node_modules\opencode-ai\bin\opencode.exe).
+  $npmRoot = $null
+  try { $npmRoot = (npm prefix -g 2>$null | Select-Object -Last 1) } catch {}
+  $realExe = Join-Path $npmRoot "node_modules\opencode-ai\bin\opencode.exe"
+  if (Test-Path $realExe) {
+    $candidate = $realExe
+  } else {
+    try {
+      $cmd = Get-Command opencode -ErrorAction SilentlyContinue
+      if ($cmd -and $cmd.Source -match '\.exe$') { $candidate = $cmd.Source }
+    } catch {}
+  }
+  if ($Yes -or -not $candidate) {
+    if ($Yes) {
+      Write-Warn 'Keeping placeholder C:/PATH/TO/opencode.exe -- edit it in cordis.patch.yml yourself.'
+    } else {
+      Write-Warn "Could not auto-detect opencode. Edit 'C:/PATH/TO/opencode.exe' in $PatchPath yourself."
+    }
+  } else {
+    Write-Ok "Detected opencode at: $candidate"
+    if (-not $DryRun) {
+      $content = $content -replace 'C:/PATH/TO/opencode\.exe', ($candidate -replace '\\', '/')
+      Set-Content -Path $PatchPath -Value $content -Encoding UTF8
+    }
+  }
+  }
+}
+
+# ---- 5. summary ------------------------------------------------------------
+Write-Step 'Done'
+$presetNames = (Get-ChildItem $PresetsSrc -Directory | ForEach-Object { $_.Name }) -join ', '
+Write-Ok "Presets installed:  $presetNames"
+if ($HasWeb) { Write-Ok "Web profile:        $WebDst" }
+if ($toBackup.Count -gt 0) { Write-Ok "Backup:             $BackupRoot" }
+Write-Host ''
+Write-Host 'Next steps:' -ForegroundColor Cyan
+Write-Host '  1. Restart the harness (dsh web restart)'
+Write-Host "  2. Pick a mode: $presetNames"
+if ($DryRun) { Write-Host ''; Write-Warn 'DRY RUN -- nothing was changed.' }
