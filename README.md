@@ -2,10 +2,6 @@
 
 Orchestrator mode for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). A full coding agent that runs as an **orchestrator**: the user independently chooses two model routes, and every spawned sub-agent uses its own route.
 
-> This is one of three mode repos. The others:
-> - **AutoDiff mode + review panel:** [edwilhelm/dsh-autodiff](https://github.com/edwilhelm/dsh-autodiff)
-> - **ACP mode:** [edwilhelm/dsh-acp](https://github.com/edwilhelm/dsh-acp)
-
 ## Repository Structure
 
 ```
@@ -58,7 +54,7 @@ chmod +x install.sh
 
 The script will:
 1. Detect your `$DSH_HOME` (defaults to `~/.dsh`, respects the `$DSH_HOME` env var)
-2. **Back up** any existing files it's about to overwrite into a timestamped folder (`$DSH_HOME/.dsh-modes-plugins-backup-<timestamp>`)
+2. **Back up** any existing files it's about to overwrite into a timestamped folder (`$DSH_HOME/.dsh-orchestrator-backup-<timestamp>`)
 3. Copy the Orchestrator preset and plugins
 4. Print next steps
 
@@ -81,7 +77,7 @@ Both installers restore the previous state from the latest backup:
 ```
 
 What `--uninstall` does:
-1. Finds the newest backup folder (`$DSH_HOME/.dsh-modes-plugins-backup-<timestamp>`)
+1. Finds the newest backup folder (`$DSH_HOME/.dsh-orchestrator-backup-<timestamp>`)
 2. **Restores** every backed-up file to its original location
 3. **Removes** presets that were created by the installer and didn't exist before
 4. Deletes the backup folder (use `-KeepBackup` / `--keep-backup` to keep it)

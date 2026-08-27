@@ -24,7 +24,7 @@
 
 .PARAMETER Uninstall
   Restore the previous state from the latest backup folder
-  ($DshHome\.dsh-modes-plugins-backup-<timestamp>). Presets and web-profile
+  ($DshHome\.dsh-orchestrator-backup-<timestamp>). Presets and web-profile
   files that were created by the installer and didn't exist before are removed.
 
 .PARAMETER KeepBackup
@@ -70,7 +70,7 @@ $WebPlugins = if ($HasWeb -and (Test-Path (Join-Path $WebSrc 'plugins'))) {
 if ($Uninstall) {
   $PresetsDst = Join-Path $DshHome '.agent-presets'
   $WebDst     = Join-Path $DshHome 'profiles\web'
-  $backups = @(Get-ChildItem $DshHome -Directory -Filter '.dsh-modes-plugins-backup-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+  $backups = @(Get-ChildItem $DshHome -Directory -Filter '.dsh-orchestrator-backup-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
   if ($backups.Count -eq 0) {
     Write-Warn "No backup found under $DshHome (nothing to restore)."
     Write-Host 'If you want to remove the installed presets/web-profile anyway, delete them manually:'
@@ -146,7 +146,7 @@ $WebDst     = Join-Path $DshHome 'profiles\web'
 
 # ---- 1. backup existing files ---------------------------------------------
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$BackupRoot = Join-Path $DshHome ".dsh-modes-plugins-backup-$stamp"
+$BackupRoot = Join-Path $DshHome ".dsh-orchestrator-backup-$stamp"
 $toBackup = @()
 foreach ($preset in Get-ChildItem $PresetsSrc -Directory) {
   $dst = Join-Path $PresetsDst $preset.Name

@@ -54,7 +54,7 @@ fi
 
 # ---- uninstall mode --------------------------------------------------------
 if (( UNINSTALL )); then
-  BACKUP="$(find "$DSH_HOME" -maxdepth 1 -type d -name '.dsh-modes-plugins-backup-*' -print | sort | tail -n 1 || true)"
+  BACKUP="$(find "$DSH_HOME" -maxdepth 1 -type d -name '.dsh-orchestrator-backup-*' -print | sort | tail -n 1 || true)"
   if [[ -z "$BACKUP" || ! -d "$BACKUP" ]]; then
     warn "No backup found under $DSH_HOME (nothing to restore)."
     echo "If you want to remove the installed presets/web-profile anyway, delete them manually:"
@@ -123,7 +123,7 @@ log "Installing to $DSH_HOME"
 
 # ---- 1. backup existing files -------------------------------------------
 STAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP_ROOT="$DSH_HOME/.dsh-modes-plugins-backup-$STAMP"
+BACKUP_ROOT="$DSH_HOME/.dsh-orchestrator-backup-$STAMP"
 TO_BACKUP=()
 for preset_dir in "$PRESETS_SRC"/*/; do
   name="$(basename "$preset_dir")"
