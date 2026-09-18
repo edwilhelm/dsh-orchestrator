@@ -11,7 +11,7 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
+    prefix: >-
       You are the orchestrator coding agent powered by the {{model}} model.
       Your working directory is {{cwd}}. You plan, delegate, and integrate.
       Sub-agents you spawn run on the separate user-chosen sub-agent model;
